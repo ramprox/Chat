@@ -1,5 +1,7 @@
 package serverside.service;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import serverside.interfaces.AuthService;
 import serverside.model.User;
 
@@ -22,6 +24,7 @@ public class MyServer {
     private static final String ERR_SPM = "/errorSPM ";   // ошибка при отправке личного сообщения
     private static final String CLIENTS = "/clients ";    // список онлайн клиентов
 
+    private static final Logger LOGGER = LogManager.getLogger(MyServer.class);
 
     public AuthService getAuthService() {
         return authService;
@@ -37,27 +40,26 @@ public class MyServer {
      */
     public MyServer() {
         try (ServerSocket server = new ServerSocket(PORT)) {
+            LOGGER.info("Сервер запущен");
             authService = new BaseAuthService();
             authService.start();
             clients = new ArrayList<>();
             while(true) {
-                System.out.println("Сервер ожидает подключения");
+                LOGGER.info("Сервер ожидает подключения");
                 Socket socket = server.accept();
-                System.out.println("Клиент подключился");
+                LOGGER.info("Клиент подключился");
                 new ClientHandler(this, socket);
             }
-        } catch (IOException e) {
-            System.out.println("Сервер грохнулся");
+        } catch (IOException ex) {
+            LOGGER.error("Сервер грохнулся: " + ex.getMessage());
         } catch(SQLException ex) {
-            for(Throwable t : ex) {
-                t.printStackTrace();
-            }
-            System.out.println("Соединение с базой данных отсутствует");
+            LOGGER.error("Проблемы с базой данных: " + ex.getMessage());
         } finally {
             if(authService != null) {
                 authService.stop();
             }
             DBConnection.closeConnection();
+            LOGGER.info("Работа сервера остановлена");
         }
     }
 
@@ -78,9 +80,10 @@ public class MyServer {
      * @param message сообщение
      */
     public synchronized void sendPrivateMessage(ClientHandler sender, String recipient, String message) {
+        String senderNick = sender.getUser().getNick();
         for(ClientHandler c : clients) {
             if(c.getUser().getNick().equals(recipient)) {
-                c.sendMessage("[Личное сообщение от " + sender.getUser().getNick() + "]: " + message);
+                c.sendMessage("[Личное сообщение от " + senderNick + "]: " + message);
                 sender.sendMessage("[Личное сообщение к " + recipient + "]: " + message);
                 return;
             }

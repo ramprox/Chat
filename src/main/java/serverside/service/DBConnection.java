@@ -1,5 +1,8 @@
 package serverside.service;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.sql.*;
 
 public class DBConnection {
@@ -7,6 +10,8 @@ public class DBConnection {
     private static final String USER = "root";
     private static final String PASSWORD = "root";
     private static Connection dbConnection;
+
+    private static final Logger LOGGER = LogManager.getLogger(DBConnection.class);
     
     public static Connection getConnection() throws SQLException {
         /*try {
@@ -16,6 +21,7 @@ public class DBConnection {
         }*/
         if(dbConnection == null) {
             dbConnection = DriverManager.getConnection(DB, USER, PASSWORD);
+            LOGGER.info("Соединение с базой данных установлено");
         }
         return dbConnection;
     }
@@ -25,9 +31,9 @@ public class DBConnection {
             if(dbConnection != null) {
                 dbConnection.close();
             }
+            LOGGER.info("Соединение с базой данных закрыто.");
         } catch(SQLException ex) {
-            System.out.println("Ошибка при закрытии соединения с базой данных.");
-            ex.printStackTrace();
+            LOGGER.error("Ошибка при закрытии соединения с базой данных: " + ex.getMessage());
         } finally {
             dbConnection = null;
         }

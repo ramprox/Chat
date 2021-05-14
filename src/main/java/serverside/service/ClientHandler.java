@@ -1,5 +1,7 @@
 package serverside.service;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import serverside.model.User;
 
 import java.io.DataInputStream;
@@ -43,6 +45,8 @@ public class ClientHandler {
     // запросы в базу данных
     private static final String CHANGE_NICK_QUERY = "UPDATE users SET nick=? WHERE nick=?"; // запрос на смену ника
 
+    private static final Logger LOGGER = LogManager.getLogger(ClientHandler.class);
+
     public ClientHandler(MyServer myServer, Socket socket) {
         try {
             this.myServer = myServer;
@@ -54,8 +58,9 @@ public class ClientHandler {
             ExecutorService executorService = Executors.newSingleThreadExecutor();
             executorService.execute(clientHandlerThread());
             executorService.shutdown();
-        } catch(IOException e) {
+        } catch(IOException ex) {
             closeConnection();
+            LOGGER.error("Проблемы при создании ClientHandler: " + ex.getMessage());
             throw new RuntimeException("Проблемы при создании ClientHandler");
         }
     }
@@ -113,7 +118,7 @@ public class ClientHandler {
             try {
                 Thread.sleep(timeForAuthenticationInSecond * 1000);
             } catch (InterruptedException ignored) {
-
+                return false;
             }
             sendMessage(TIMEOUT_AUTH);
             return false;
@@ -138,6 +143,7 @@ public class ClientHandler {
                         if (user != null) {
                             if (!myServer.isUserBusy(user)) {
                                 sendMessage(AUTH_OK + user.getNick() + " " + login);
+                                LOGGER.info("Пользователь с логином " + login + " и ником " + user.getNick() + " вошел в чат");
                                 this.user = user;
                                 return true;
                             } else {
@@ -149,6 +155,7 @@ public class ClientHandler {
                     }
                 }
             } catch (SQLException ex) {
+                LOGGER.error("Ошибка при авторизации: " + ex.getMessage());
                 sendMessage(ERROR_DB_CONNECTION + "Соединение с базой данных отсутствует");
             }
             return false;
@@ -161,6 +168,8 @@ public class ClientHandler {
                 while(true) {
                     Thread.sleep(1);
                     if(System.currentTimeMillis() - timeLastReadedMessage >= timeInMillis) {
+                        LOGGER.info("Пользователь с ником " + user.getNick() + " в течение "
+                                + timeForReadMessageFromClientInSeconds + " секунд не проявил активность");
                         sendMessage(TIMEOUT_ACTIVITY);
                         closeConnection();
                         break;
@@ -176,8 +185,8 @@ public class ClientHandler {
         return () -> {
             try {
                 readMessages();
-            } catch (IOException ignored) {
-
+            } catch (IOException ex) {
+                LOGGER.error("Ошибка при чтении сообщения от клиента: " + ex.getMessage());
             } finally {
                 closeConnection();
             }
@@ -192,7 +201,6 @@ public class ClientHandler {
         while(true) {
             String messageFromClient = dis.readUTF();
             timeLastReadedMessage = System.currentTimeMillis();
-            System.out.println(user.getNick() + " send message " + messageFromClient);
             if(isServiceMessage(messageFromClient)) {
                 String trimedMessage = messageFromClient.trim();
                 if(isEndSessionCommand(trimedMessage)) {
@@ -201,7 +209,8 @@ public class ClientHandler {
                 handleServiceMessage(trimedMessage);
                 continue;
             }
-            myServer.broadcastMessage("[" + user + "]: " + messageFromClient);
+            LOGGER.info("Пользователь с ником " + user.getNick() + " прислал сообщение в общий чат: " + messageFromClient);
+            myServer.broadcastMessage("[" + user.getNick() + "]: " + messageFromClient);
         }
     }
 
@@ -231,27 +240,34 @@ public class ClientHandler {
         if(message.startsWith(SEND_PRIVATE_MESSAGE)) {
             String[] arr = message.split("\\s", 3);
             if(!this.user.getNick().equals(arr[1])) {
+                LOGGER.info("Пользователь с ником " + user.getNick() +
+                        " прислал личное сообщение пользователю с ником " + arr[1] +
+                        ": " + arr[2]);
                 myServer.sendPrivateMessage(this, arr[1], arr[2]);
             }
         }
         if(message.startsWith(LIST)) {
+            LOGGER.info("Пользователь с ником " + user.getNick() + " запросил список онлайн-клиентов");
             myServer.getOnlineUsersList(this);
         }
         if(message.startsWith(CHANGE_NICK)) {
             String oldNick = user.getNick();
             String newNick = message.substring(CHANGE_NICK.length() + 1);
+            LOGGER.info("Пользователь с ником " + user.getNick() + " прислал запрос на смену ника на " + newNick);
             try (PreparedStatement statement = DBConnection.getConnection().prepareStatement(CHANGE_NICK_QUERY)) {
                 statement.setString(1, newNick);
                 statement.setString(2, user.getNick());
                 if (statement.executeUpdate() > 0) {
                     user.setNick(newNick);
+                    LOGGER.info("Пользователь с ником " + user.getNick() + " поменял ник на " + newNick);
                     sendMessage(CHANGE_NICK_OK + newNick);
                     myServer.broadcastMessage(NOTIFY + "[" + oldNick + " сменил ник на " + newNick + "]");
                 }
             } catch (SQLIntegrityConstraintViolationException ex) {
                 sendMessage(ERROR_CHANGE_NICK + "Пользователь с данным ником уже существует");
             } catch (SQLException ex) {
-                sendMessage(ERROR_DB_CONNECTION + "Соединение с базой данных отсутствует");
+                LOGGER.error("Проблемы с базой данных при попытке смены ника c " + oldNick + " на " + newNick + ": " + ex.getMessage());
+                sendMessage(ERROR_DB_CONNECTION + "Проблемы с базой данных при попытке смены ника");
             }
         }
     }
@@ -259,7 +275,9 @@ public class ClientHandler {
     public void sendMessage(String message) {
         try {
             dos.writeUTF(message);
-        } catch (IOException ignored) {
+        } catch (IOException ex) {
+            LOGGER.error("Ошибка при отправке пользователю с ником " + user.getNick() +
+                    " сообщения: " + message + ": " + ex.getMessage());
             closeConnection();
         }
     }
@@ -268,23 +286,19 @@ public class ClientHandler {
         if(isConnected) {
             isConnected = false;
             if(user != null) {
+                LOGGER.info("Пользователь с ником " + user.getNick() + " покинул чат");
                 myServer.unsubscribe(this);
                 myServer.broadcastMessage(NOTIFY + user.getNick() + " покинул чат");
             }
             try {
                 dis.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (IOException ex) {
+                LOGGER.error("Ошибка при закрытии DataInputStream: " + ex.getMessage());
             }
             try {
                 dos.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            try {
-                socket.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (IOException ex) {
+                LOGGER.error("Ошибка при закрытии DataOutputStream: " + ex.getMessage());
             }
         }
     }

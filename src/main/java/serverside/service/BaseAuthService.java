@@ -1,11 +1,15 @@
 package serverside.service;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import serverside.interfaces.AuthService;
 import serverside.model.User;
 
 import java.sql.*;
 
 public class BaseAuthService implements AuthService {
+
+    private static final Logger LOGGER = LogManager.getLogger(BaseAuthService.class);
 
     public BaseAuthService() throws SQLException {
         Connection connection = DBConnection.getConnection();
@@ -25,6 +29,7 @@ public class BaseAuthService implements AuthService {
             }
             connection.commit();
         } catch (SQLException ex) {
+            LOGGER.error("Ошибка при создании таблицы users в базе данных: " + ex.getMessage());
             connection.rollback();
             throw ex;
         } finally {
@@ -34,12 +39,12 @@ public class BaseAuthService implements AuthService {
 
     @Override
     public void start() {
-        System.out.println("Сервис аутентификации запущен");
+        LOGGER.info("Сервис аутентификации запущен");
     }
 
     @Override
     public void stop() {
-        System.out.println("Сервис аутентификации остановлен");
+        LOGGER.info("Сервис аутентификации остановлен");
     }
 
     @Override
