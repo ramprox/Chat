@@ -1,13 +1,14 @@
 package clientside.service;
 
 import clientside.model.ConnectionInfo;
+import clientside.model.HistoryWriter;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
+import java.awt.event.*;
 import java.io.*;
 import java.net.Socket;
+import java.util.concurrent.TimeoutException;
 
 public class Client extends JFrame {
     private static final Dimension MINIMUM_SIZE = new Dimension(400, 400);
@@ -17,31 +18,26 @@ public class Client extends JFrame {
     private DataInputStream dis;
     private DataOutputStream dos;
     private final ConnectionInfo connectionInfo = new ConnectionInfo();
-    private String connectionLogin = "";
-    private RandomAccessFile raf;
-    private static final int lastMessagesCount = 100;
-    private File historyFile;
 
     private JTextField msgInputField;
     private JTextArea chatArea;
-
     private JMenuItem menuItemConnect;
     private JMenuItem menuItemDisconnect;
 
     // команды
-    private static final String END = "/end";                    // отключить соединение
+    private static final String END = "/end";                           // отключить соединение
 
     // ответы от сервера
-    private static final String AUTH_OK = "/authok ";            // успешная авторизация
-    private static final String CHANGE_NICK_OK = "/chnickok ";   // успешная смена ника
-    private static final String ERR_SPM = "/errorSPM ";          // ошибка при отправке личного сообщения
-    private static final String CLIENTS = "/clients ";           // список онлайн клиентов
-    private static final String ERR_CHANGE_NICK = "/errchnick "; // ошибка при смене ника
-    private static final String NOTIFY = "/notify ";      // уведомление
+    private static final String AUTH_OK = "/authok ";                   // успешная авторизация
+    private static final String TIMEOUT_AUTH = "/timeoutauth";          // время для авторизации истекло
+    private static final String TIMEOUT_ACTIVITY = "/timeoutactivity";  // длительный простой
+    private static final String CHANGE_NICK_OK = "/chnickok ";          // успешная смена ника
+    private static final String ERR_SPM = "/errorSPM ";                 // ошибка при отправке личного сообщения
+    private static final String CLIENTS = "/clients ";                  // список онлайн клиентов
+    private static final String ERR_CHANGE_NICK = "/errchnick ";        // ошибка при смене ника
+    private static final String NOTIFY = "/notify ";                    // уведомление
 
-    private long currentMessagesCount;            // текущее количество сообщений
-    private long pointerLastMessages;             // указатель на место в файле истории,
-                                                  // откуда начинаются последние 100 сообщений
+    private HistoryWriter historyWriter;                                // писатель истории сообщений
 
     public Client() {
         prepareGUI();
@@ -60,17 +56,24 @@ public class Client extends JFrame {
         }
     }
 
+    /**
+     * Устанавливает соединение
+     * @throws IOException - если возникли неполадки во время установления соединения
+     */
     private void connection() throws IOException {
         socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
         dis = new DataInputStream(socket.getInputStream());
         dos = new DataOutputStream(socket.getOutputStream());
         setConnected(true);
+
         new Thread(() -> {
             try {
                 authentication();
                 readMessageFromServer();
             } catch (IOException ignored) {
-                closeConnection(true);
+                closeConnection(true, "Соединение разорвано");
+            } catch (TimeoutException e) {
+                closeConnection(false, e.getMessage());
             } finally {
                 setTitle("Клиент");
             }
@@ -78,71 +81,27 @@ public class Client extends JFrame {
     }
 
     /**
-     * Создает файл истории сообщений если он не существует и загружает последние 100 сообщений
-     * Структура файла истории:
-     * Первая строка - указатель типа long на место в файле, откуда начинаются последние 100 сообщений
-     * Следующие строки - сами сообщения
-     */
-    private void createHistoryFileIfNotExist() {
-        try {
-            File historiesDir = new File("Clients Histories");
-            historiesDir.mkdir();
-            historyFile = new File(historiesDir.getPath() + "//history_" + connectionLogin + ".txt");
-            raf = new RandomAccessFile(historyFile, "rw");
-            if(historyFile.length() == 0) {
-                pointerLastMessages = 10;
-                raf.writeLong(pointerLastMessages);
-                raf.writeChar('\n');
-            } else {
-                pointerLastMessages = raf.readLong();
-                raf.seek(pointerLastMessages);
-                loadLastMessages();
-            }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            closeConnection();
-        }
-    }
-
-    private void writeHistory(String message) {
-        try {
-            raf.writeUTF(message);
-            currentMessagesCount++;
-
-            if(currentMessagesCount > lastMessagesCount) {
-                raf.seek(pointerLastMessages);
-                raf.readUTF();
-                pointerLastMessages = raf.getFilePointer();
-                raf.seek(historyFile.length());
-            }
-        } catch (IOException e) {
-            createHistoryFileIfNotExist();
-        }
-    }
-
-    private void loadLastMessages() throws IOException {
-        while(raf.getFilePointer() != historyFile.length()) {
-            chatArea.append(raf.readUTF());
-            currentMessagesCount++;
-        }
-    }
-
-    /**
      * Цикл аутентификации
      * @throws IOException, если какие то неполадки во время чтения сообщения от сервера
      */
-    private void authentication() throws IOException {
+    private void authentication() throws IOException, TimeoutException {
         while (true) {
             String messageFromServer = dis.readUTF();
             if (messageFromServer.startsWith(AUTH_OK)) {
                 String[] arr = messageFromServer.split("\\s");
                 connectionInfo.setAuthorized(true);
-                createHistoryFileIfNotExist();
-                showInfoMessage("Вы вошли в чат. Ваш ник " + arr[1]);
+                historyWriter = new HistoryWriter(arr[2], 100);
+                String lastMessages = historyWriter.getLastMessages();
+                chatArea.setText("");
+                chatArea.append(lastMessages);
                 setTitle(arr[1]);
+                EventQueue.invokeLater(() -> showInfoMessage("Вы вошли в чат. Ваш ник " + arr[1]));
                 break;
             }
-            showErrorMessage(messageFromServer);
+            if(messageFromServer.startsWith(TIMEOUT_AUTH)) {
+                throw new TimeoutException("Время для авторизации истекло");
+            }
+            EventQueue.invokeLater(() -> showErrorMessage(messageFromServer));
         }
     }
 
@@ -150,14 +109,14 @@ public class Client extends JFrame {
      * Цикл чтения сообщений от сервера после успешной аутентификации
      * @throws IOException, если какие то неполадки во время чтения сообщения от сервера
      */
-    private void readMessageFromServer() throws IOException {
+    private void readMessageFromServer() throws IOException, TimeoutException {
         while (true) {
             String messageFromServer = dis.readUTF();
             if(isServiceMessage(messageFromServer)) {
                 handleServiceMessage(messageFromServer);
                 continue;
             }
-            writeHistory(messageFromServer + "\n");
+            historyWriter.write(messageFromServer + "\n");
             chatArea.append(messageFromServer + "\n");
         }
     }
@@ -165,7 +124,7 @@ public class Client extends JFrame {
     /**
      * Метод, определяющий является ли сообщение от сервера служебным сообщением
      * @param message - сообщение от сервера
-     * @return
+     * @return true - если сообщение является служебным сообщением, false - в противном случае
      */
     private boolean isServiceMessage(String message) {
         return message.trim().startsWith("/");
@@ -175,7 +134,7 @@ public class Client extends JFrame {
      * Метод обработки служебных сообщений от сервера
      * @param message - служебное сообщение от сервера
      */
-    private void handleServiceMessage(String message) {
+    private void handleServiceMessage(String message) throws TimeoutException {
         if(message.startsWith(ERR_SPM)) {
             String errMsg = message.substring(ERR_SPM.length());
             showErrorMessage(errMsg);
@@ -198,8 +157,15 @@ public class Client extends JFrame {
             String errMsg = message.substring(ERR_CHANGE_NICK.length());
             showErrorMessage(errMsg);
         }
+        if(message.startsWith(TIMEOUT_ACTIVITY)) {
+            throw new TimeoutException("Соединение разорвано по причине длительного простоя");
+        }
     }
 
+    /**
+     * Устанавливает состояние соединения клиента
+     * @param connected - значение типа boolean. true - если соединение установлено, false - в противном случае
+     */
     private void setConnected(boolean connected) {
         connectionInfo.setConnected(connected);
         if(connected) {
@@ -211,14 +177,13 @@ public class Client extends JFrame {
         }
     }
 
+    /**
+     * Отправляет сообщение набранное в поле msgInputField
+     */
     private void send() {
         String messageToServer = msgInputField.getText();
         if(!messageToServer.trim().isEmpty()) {
             if(connectionInfo.isConnected()) {
-                if(messageToServer.trim().startsWith("/auth")) {
-                    String[] arr = messageToServer.trim().split("\\s");
-                    connectionLogin = arr[1];
-                }
                 sendMessageToServer(messageToServer);
                 msgInputField.setText("");
                 msgInputField.grabFocus();
@@ -228,23 +193,32 @@ public class Client extends JFrame {
         }
     }
 
+    /**
+     * Отправляет сообщение на сервер
+     * @param message - сообщение
+     */
     private void sendMessageToServer(String message) {
         try {
             dos.writeUTF(message);
             if(message.equals(END)) {
-                closeConnection(false);
+                closeConnection(false, "Соединение разорвано");
             }
         } catch (IOException ignored) {
-            closeConnection(true);
+            closeConnection(true, "Соединение разорвано");
         }
     }
 
-    private void closeConnection(boolean isError) {
+    /**
+     * Закрывает соединение и показывает сообщение в окне
+     * @param isError указывает, закрывается ли соединение в результате ошибки (true) или по команде клиента (false)
+     * @param message - выводимое в окно сообщение
+     */
+    private void closeConnection(boolean isError, String message) {
         if(closeConnection()) {
             if(isError) {
-                showErrorMessage("Соединение разорвано");
+                showErrorMessage(message);
             } else {
-                showInfoMessage("Соединение разорвано");
+                showInfoMessage(message);
             }
         }
     }
@@ -259,7 +233,7 @@ public class Client extends JFrame {
             closeDataInputStream();
             closeDataOutputStream();
             closeSocket();
-            closeHistoryReaderWriter();
+            closeHistoryWriterService();
             return true;
         }
         return false;
@@ -295,29 +269,33 @@ public class Client extends JFrame {
         }
     }
 
-    private void closeHistoryReaderWriter() {
-        if(raf != null) {
-            try {
-                raf.seek(0);
-                raf.writeLong(pointerLastMessages);
-                raf.close();
-                raf = null;
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+    private void closeHistoryWriterService() {
+        if(historyWriter != null) {
+            historyWriter.close();
         }
     }
 
+    /**
+     * Показывает в окне с пометкой "Информация" сообщение
+     * @param message - выводимое сообщение
+     */
     private void showInfoMessage(String message) {
         JOptionPane.showMessageDialog(this, message,
                 "Информация", JOptionPane.INFORMATION_MESSAGE);
     }
 
+    /**
+     * Показывает в окне с пометкой "Ошибка" сообщение
+     * @param message - выводимое сообщение
+     */
     private void showErrorMessage(String message) {
         JOptionPane.showMessageDialog(this, message,
                 "Ошибка", JOptionPane.ERROR_MESSAGE);
     }
 
+    /**
+     * Подготовка GUI
+     */
     private void prepareGUI() {
         setMinimumSize(MINIMUM_SIZE);
         setSize(MINIMUM_SIZE);

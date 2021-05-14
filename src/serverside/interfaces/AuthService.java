@@ -1,9 +1,11 @@
 package serverside.interfaces;
 
+import serverside.model.User;
+
 import java.sql.*;
 
 public interface AuthService {
     void start();
     void stop();
-    String getNickByLoginAndPassword(String login, String password) throws SQLException;
+    User getUserByLoginAndPassword(String login, String password) throws SQLException;
 }

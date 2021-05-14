@@ -1,11 +1,11 @@
 package serverside.service;
 
 import serverside.interfaces.AuthService;
+import serverside.model.User;
+
 import java.sql.*;
 
 public class BaseAuthService implements AuthService {
-
-    private static final String queryNick = "SELECT nick FROM users WHERE login=? AND password=?";
 
     public BaseAuthService() throws SQLException {
         Connection connection = DBConnection.getConnection();
@@ -27,6 +27,8 @@ public class BaseAuthService implements AuthService {
         } catch (SQLException ex) {
             connection.rollback();
             throw ex;
+        } finally {
+            connection.setAutoCommit(true);
         }
     }
 
@@ -41,16 +43,13 @@ public class BaseAuthService implements AuthService {
     }
 
     @Override
-    public String getNickByLoginAndPassword(String login, String password) throws SQLException {
+    public User getUserByLoginAndPassword(String login, String password) throws SQLException {
+        String queryNick = "SELECT * FROM users WHERE login=? AND password=?";
         try (PreparedStatement statement = DBConnection.getConnection().prepareStatement(queryNick)) {
             statement.setString(1, login);
             statement.setString(2, password);
             ResultSet result = statement.executeQuery();
-            String nick = null;
-            if (result.next()) {
-                nick = result.getString("nick");
-            }
-            return nick;
+            return User.userBuilder(result);
         }
     }
 }

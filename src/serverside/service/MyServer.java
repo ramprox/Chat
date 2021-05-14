@@ -1,6 +1,8 @@
 package serverside.service;
 
 import serverside.interfaces.AuthService;
+import serverside.model.User;
+
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -59,45 +61,63 @@ public class MyServer {
         }
     }
 
+    /**
+     * Отправляет сообщение в общий чат
+     * @param message сообщение
+     */
     public synchronized void broadcastMessage(String message) {
         for(ClientHandler c : clients) {
             c.sendMessage(message);
         }
     }
 
-    public synchronized void sendPrivateMessage(ClientHandler sender, String nick, String message) {
+    /**
+     * Отправляет личное сообщение
+     * @param sender отправитель
+     * @param recipient получатель
+     * @param message сообщение
+     */
+    public synchronized void sendPrivateMessage(ClientHandler sender, String recipient, String message) {
         for(ClientHandler c : clients) {
-            if(c.getName().equals(nick)) {
-                c.sendMessage("[Личное сообщение от " + sender.getName() + "]: " + message);
-                sender.sendMessage("[Личное сообщение к " + nick + "]: " + message);
+            if(c.getUser().getNick().equals(recipient)) {
+                c.sendMessage("[Личное сообщение от " + sender.getUser().getNick() + "]: " + message);
+                sender.sendMessage("[Личное сообщение к " + recipient + "]: " + message);
                 return;
             }
         }
-        sender.sendMessage(ERR_SPM + "Пользователя " + nick + " нет в чате");
+        sender.sendMessage(ERR_SPM + "Пользователя " + recipient + " нет в чате");
     }
 
     public synchronized void getOnlineUsersList(ClientHandler clientHandler) {
         StringBuilder sb = new StringBuilder(CLIENTS);
         for(ClientHandler c : clients) {
             if(!c.equals(clientHandler)) {
-                sb.append(c.getName()).append(" ");
+                sb.append(c.getUser().getNick()).append(" ");
             }
         }
         clientHandler.sendMessage(sb.toString());
     }
 
-
+    /**
+     * Подписывает клиента на рассылку сообщений
+     * @param client подписываемый клиент
+     */
     public synchronized void subscribe(ClientHandler client) {
         clients.add(client);
     }
 
+    /**
+     * Отписывает клиента на рассылку сообщений
+     * @param client отписываемый клиент
+     */
     public synchronized void unsubscribe(ClientHandler client) {
         clients.remove(client);
     }
 
-    public boolean isNickBusy(String nick) {
+
+    public boolean isUserBusy(User user) {
         for(ClientHandler client : clients) {
-            if(client.getName().equals(nick)) {
+            if(client.getUser().equals(user)) {
                 return true;
             }
         }

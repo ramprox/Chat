@@ -1,5 +1,7 @@
 package serverside.service;
 
+import serverside.model.User;
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -16,10 +18,10 @@ public class ClientHandler {
     private final DataOutputStream dos;
     private volatile boolean isConnected;
 
-    private String name;
+    private User user;
 
     private static final int timeForAuthenticationInSecond = 120;
-    private static final int timeForReadMessageFromClientInSeconds = 10;
+    private static final int timeForReadMessageFromClientInSeconds = 180;
     private volatile long timeLastReadedMessage;
 
     // команды от клиента
@@ -31,10 +33,12 @@ public class ClientHandler {
     private static final String NOTIFY = "/notify ";      // уведомление
 
     // результаты выполнения команд от клиента
-    private static final String AUTH_OK = "/authok ";               // успешная авторизация
-    private static final String CHANGE_NICK_OK = "/chnickok ";      // успешная смена ника
-    private static final String ERROR_CHANGE_NICK = "/errchnick ";  // ошибка при смене ника
-    private static final String ERROR_DB_CONNECTION = "/errdbcon "; // соединение с базой данных отсутствует
+    private static final String AUTH_OK = "/authok ";                  // успешная авторизация
+    private static final String CHANGE_NICK_OK = "/chnickok ";         // успешная смена ника
+    private static final String TIMEOUT_AUTH = "/timeoutauth";         // время для авторизации истекло
+    private static final String TIMEOUT_ACTIVITY = "/timeoutactivity"; // длительный простой
+    private static final String ERROR_CHANGE_NICK = "/errchnick ";     // ошибка при смене ника
+    private static final String ERROR_DB_CONNECTION = "/errdbcon ";    // соединение с базой данных отсутствует
 
     // запросы в базу данных
     private static final String CHANGE_NICK_QUERY = "UPDATE users SET nick=? WHERE nick=?"; // запрос на смену ника
@@ -46,7 +50,7 @@ public class ClientHandler {
             this.dis = new DataInputStream(socket.getInputStream());
             this.dos = new DataOutputStream(socket.getOutputStream());
             isConnected = true;
-            this.name = "";
+            this.user = null;
             ExecutorService executorService = Executors.newSingleThreadExecutor();
             executorService.execute(clientHandlerThread());
             executorService.shutdown();
@@ -69,7 +73,7 @@ public class ClientHandler {
      * 2. Если клиент авторизовался запускается на выполнение тот же executor с двумя потоками в пуле. В одном
      *    потоке запускается таймер на отслеживание активности от клиента, во втором потоке запускается цикл
      *    чтения сообщений от клиента. Результат выполнения этих потоков не отслеживается, поэтому эти две
-     *    задачи запускаются на выполнение, вызывается shutdown (сообщаем, что других задач не будет) и
+     *    задачи запускаются на выполнение вызовом execute, вызывается shutdown (сообщаем, что других задач не будет) и
      *    базовый поток завершает выполнение.
      * @return объект, реулизующий Runnable для запуска в отдельном потоке
      */
@@ -90,7 +94,7 @@ public class ClientHandler {
                 closeConnection();
                 return;
             }
-            myServer.broadcastMessage(NOTIFY + name + " вошел в чат");
+            myServer.broadcastMessage(NOTIFY + user.getNick() + " вошел в чат");
             myServer.subscribe(this);
             long timeInMillis = timeForReadMessageFromClientInSeconds * 1000;
             timeLastReadedMessage = System.currentTimeMillis();
@@ -99,7 +103,11 @@ public class ClientHandler {
             executor.shutdown();
         };
     }
-    
+
+    /**
+     * Таймер аутентификации
+     * @return - объект, реализующий Callable<Boolean> для запуска в отдельном потоке
+     */
     private Callable<Boolean> AuthenticationTimer() {
         return () -> {
             try {
@@ -107,10 +115,15 @@ public class ClientHandler {
             } catch (InterruptedException ignored) {
 
             }
+            sendMessage(TIMEOUT_AUTH);
             return false;
         };
     }
 
+    /**
+     * Цикл чтения данных аутентификации
+     * @return - объект, реализующий Callable<Boolean> для запуска в отдельном потоке
+     */
     private Callable<Boolean> authentication() {
         return () -> {
             try {
@@ -118,16 +131,17 @@ public class ClientHandler {
                     String str = dis.readUTF();
                     if (str.startsWith(AUTH)) {
                         String[] arr = str.split("\\s");
-                        String nick = myServer
+                        String login = arr[1];
+                        User user = myServer
                                 .getAuthService()
-                                .getNickByLoginAndPassword(arr[1], arr[2]);
-                        if (nick != null) {
-                            if (!myServer.isNickBusy(nick)) {
-                                sendMessage(AUTH_OK + nick);
-                                name = nick;
+                                .getUserByLoginAndPassword(arr[1], arr[2]);
+                        if (user != null) {
+                            if (!myServer.isUserBusy(user)) {
+                                sendMessage(AUTH_OK + user.getNick() + " " + login);
+                                this.user = user;
                                 return true;
                             } else {
-                                sendMessage("Ник занят");
+                                sendMessage("Пользователь с данным логином и паролем уже в чате");
                             }
                         } else {
                             sendMessage("Неправильный логин или пароль");
@@ -147,6 +161,7 @@ public class ClientHandler {
                 while(true) {
                     Thread.sleep(1);
                     if(System.currentTimeMillis() - timeLastReadedMessage >= timeInMillis) {
+                        sendMessage(TIMEOUT_ACTIVITY);
                         closeConnection();
                         break;
                     }
@@ -177,7 +192,7 @@ public class ClientHandler {
         while(true) {
             String messageFromClient = dis.readUTF();
             timeLastReadedMessage = System.currentTimeMillis();
-            System.out.println(name + " send message " + messageFromClient);
+            System.out.println(user.getNick() + " send message " + messageFromClient);
             if(isServiceMessage(messageFromClient)) {
                 String trimedMessage = messageFromClient.trim();
                 if(isEndSessionCommand(trimedMessage)) {
@@ -186,14 +201,14 @@ public class ClientHandler {
                 handleServiceMessage(trimedMessage);
                 continue;
             }
-            myServer.broadcastMessage("[" + name + "]: " + messageFromClient);
+            myServer.broadcastMessage("[" + user + "]: " + messageFromClient);
         }
     }
 
     /**
      * Метод, определяющий является ли сообщение от клиента служебным сообщением
      * @param message - сообщение от клиента
-     * @return
+     * @return true - если сообщение от клиента является служебным сообщением, false - в противном случае
      */
     private boolean isServiceMessage(String message) {
         return message.trim().startsWith("/");
@@ -202,7 +217,7 @@ public class ClientHandler {
     /**
      * Метод, определяющий является ли служебное сообщение от клиента командой завершения сессии
      * @param message - служебное сообщение от клиента
-     * @return
+     * @return true - если сообщение от клиента является командой завершения сессии, false - в противном случае
      */
     private boolean isEndSessionCommand(String message) {
         return message.startsWith(END);
@@ -215,7 +230,7 @@ public class ClientHandler {
     private void handleServiceMessage(String message) {
         if(message.startsWith(SEND_PRIVATE_MESSAGE)) {
             String[] arr = message.split("\\s", 3);
-            if(!this.name.equals(arr[1])) {
+            if(!this.user.getNick().equals(arr[1])) {
                 myServer.sendPrivateMessage(this, arr[1], arr[2]);
             }
         }
@@ -223,13 +238,13 @@ public class ClientHandler {
             myServer.getOnlineUsersList(this);
         }
         if(message.startsWith(CHANGE_NICK)) {
-            String oldNick = name;
+            String oldNick = user.getNick();
             String newNick = message.substring(CHANGE_NICK.length() + 1);
             try (PreparedStatement statement = DBConnection.getConnection().prepareStatement(CHANGE_NICK_QUERY)) {
                 statement.setString(1, newNick);
-                statement.setString(2, name);
+                statement.setString(2, user.getNick());
                 if (statement.executeUpdate() > 0) {
-                    name = newNick;
+                    user.setNick(newNick);
                     sendMessage(CHANGE_NICK_OK + newNick);
                     myServer.broadcastMessage(NOTIFY + "[" + oldNick + " сменил ник на " + newNick + "]");
                 }
@@ -245,14 +260,17 @@ public class ClientHandler {
         try {
             dos.writeUTF(message);
         } catch (IOException ignored) {
+            closeConnection();
         }
     }
 
     private void closeConnection() {
         if(isConnected) {
             isConnected = false;
-            myServer.unsubscribe(this);
-            myServer.broadcastMessage(NOTIFY + name + " покинул чат");
+            if(user != null) {
+                myServer.unsubscribe(this);
+                myServer.broadcastMessage(NOTIFY + user.getNick() + " покинул чат");
+            }
             try {
                 dis.close();
             } catch (IOException e) {
@@ -271,7 +289,7 @@ public class ClientHandler {
         }
     }
 
-    public String getName() {
-        return name;
+    public User getUser() {
+        return user;
     }
 }
