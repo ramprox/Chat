@@ -13,6 +13,11 @@ public class ClientHandler {
 
     private String name;
 
+    private static final int timeForAuthenticationInSecond = 120;
+    private static final int timeForReadMessageFromClientInSeconds = 180;
+    private volatile boolean isAuthorized = false;
+    private volatile long timeLastReadedMessage;
+
     public ClientHandler(MyServer myServer, Socket socket) {
         try {
             this.myServer = myServer;
@@ -20,6 +25,17 @@ public class ClientHandler {
             this.dis = new DataInputStream(socket.getInputStream());
             this.dos = new DataOutputStream(socket.getOutputStream());
             this.name = "";
+
+            new Thread(() -> {
+                try {
+                    Thread.sleep(timeForAuthenticationInSecond * 1000);
+                    if(!isAuthorized) {
+                        closeConnection();
+                    }
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }).start();
 
             new Thread(() -> {
                 try {
@@ -47,6 +63,7 @@ public class ClientHandler {
                         .getNickByLoginAndPassword(arr[1], arr[2]);
                 if(nick != null) {
                     if(!myServer.isNickBusy(nick)) {
+                        isAuthorized = true;
                         sendMessage("/authok " + nick);
                         name = nick;
                         myServer.broadcastMessage(name + " вошел в чат");
@@ -63,19 +80,43 @@ public class ClientHandler {
     }
 
     public void readMessage() throws IOException {
+        long timeInMillis = timeForReadMessageFromClientInSeconds * 1000;
+        timeLastReadedMessage = System.currentTimeMillis();
+        new Thread(() -> {
+            try {
+                while(true) {
+                    Thread.sleep(1);
+                    if(System.currentTimeMillis() - timeLastReadedMessage >= timeInMillis) {
+                        closeConnection();
+                        break;
+                    }
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
         while(true) {
             String messageFromClient = dis.readUTF();
+            timeLastReadedMessage = System.currentTimeMillis();
             System.out.println(name + " send message " + messageFromClient);
-            if(messageFromClient.equals("/end")) {
-                return;
+            if(messageFromClient.trim().startsWith("/")) {
+                if(messageFromClient.trim().startsWith("/end")) {
+                    return;
+                }
+                if(messageFromClient.startsWith("/w")) {
+                    String[] arr = messageFromClient.split("\\s", 3);
+                    if(this.name.equals(arr[1])) {
+                        continue;
+                    }
+                    myServer.sendPrivateMessage(this, arr[1], arr[2]);
+                    continue;
+                }
+                if(messageFromClient.trim().startsWith("/list")) {
+                    myServer.getOnlineUsersList(this);
+                    continue;
+                }
             }
-            if(messageFromClient.startsWith("/w")) {
-                String[] arr = messageFromClient.split("\\s", 3);
-                String message = messageFromClient.substring(arr[0].length() + arr[1].length() + 2);
-                myServer.sendPrivateMessage(this, arr[1], message);
-            } else {
-                myServer.broadcastMessage("[" + name + "]: " + messageFromClient);
-            }
+            myServer.broadcastMessage("[" + name + "]: " + messageFromClient);
         }
     }
 
