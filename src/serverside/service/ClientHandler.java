@@ -25,6 +25,7 @@ public class ClientHandler {
     private static final String END = "/end";                // отключить соединение
     private static final String SEND_PRIVATE_MESSAGE = "/w"; // отправить личное сообщение /w nick message
     private static final String LIST = "/list";              // получить список онлайн пользователей
+    private static final String NOTIFY = "/notify ";      // уведомление
 
     // результаты выполнения команд от клиента
     private static final String AUTH_OK = "/authok ";               // успешная авторизация
@@ -33,7 +34,7 @@ public class ClientHandler {
     private static final String ERROR_DB_CONNECTION = "/errdbcon "; // соединение с базой данных отсутствует
 
     // запросы в базу данных
-    private static final String CHANGE_NICK_QUERY = "UPDATE users SET nick=? WHERE nick=?";         // запрос на смену ника
+    private static final String CHANGE_NICK_QUERY = "UPDATE users SET nick=? WHERE nick=?"; // запрос на смену ника
 
     public ClientHandler(MyServer myServer, Socket socket) {
         try {
@@ -111,7 +112,7 @@ public class ClientHandler {
                             isAuthorized = true;
                             sendMessage(AUTH_OK + nick);
                             name = nick;
-                            myServer.broadcastMessage(name + " вошел в чат");
+                            myServer.broadcastMessage(NOTIFY + name + " вошел в чат");
                             myServer.subscribe(this);
                             return;
                         } else {
@@ -155,7 +156,7 @@ public class ClientHandler {
     /**
      * Метод, определяющий является ли сообщение от клиента служебным сообщением
      * @param message - сообщение от клиента
-     * @return true - если сообщение от клиента является служебным, false - в противном случае
+     * @return
      */
     private boolean isServiceMessage(String message) {
         return message.trim().startsWith("/");
@@ -164,7 +165,7 @@ public class ClientHandler {
     /**
      * Метод, определяющий является ли служебное сообщение от клиента командой завершения сессии
      * @param message - служебное сообщение от клиента
-     * @return true - если сообщение от клиента является командой завершения сессии, false - в противном случае
+     * @return
      */
     private boolean isEndSessionCommand(String message) {
         return message.startsWith(END);
@@ -193,7 +194,7 @@ public class ClientHandler {
                 if (statement.executeUpdate() > 0) {
                     name = newNick;
                     sendMessage(CHANGE_NICK_OK + newNick);
-                    myServer.broadcastMessage("[" + oldNick + " сменил ник на " + newNick + "]");
+                    myServer.broadcastMessage(NOTIFY + "[" + oldNick + " сменил ник на " + newNick + "]");
                 }
             } catch (SQLIntegrityConstraintViolationException ex) {
                 sendMessage(ERROR_CHANGE_NICK + "Пользователь с данным ником уже существует");
@@ -212,7 +213,7 @@ public class ClientHandler {
 
     private void closeConnection() {
         myServer.unsubscribe(this);
-        myServer.broadcastMessage(name + " покинул чат");
+        myServer.broadcastMessage(NOTIFY + name + " покинул чат");
         try {
             dis.close();
         } catch (IOException e) {

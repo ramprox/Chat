@@ -5,6 +5,8 @@ import java.sql.*;
 
 public class BaseAuthService implements AuthService {
 
+    private static final String queryNick = "SELECT nick FROM users WHERE login=? AND password=?";
+
     public BaseAuthService() throws SQLException {
         Connection connection = DBConnection.getConnection();
         connection.setAutoCommit(false);
@@ -40,7 +42,6 @@ public class BaseAuthService implements AuthService {
 
     @Override
     public String getNickByLoginAndPassword(String login, String password) throws SQLException {
-        String queryNick = "SELECT * FROM users WHERE login=? AND password=?";
         try (PreparedStatement statement = DBConnection.getConnection().prepareStatement(queryNick)) {
             statement.setString(1, login);
             statement.setString(2, password);

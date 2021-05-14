@@ -6,9 +6,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.Socket;
 
 public class Client extends JFrame {
@@ -19,6 +17,10 @@ public class Client extends JFrame {
     private DataInputStream dis;
     private DataOutputStream dos;
     private final ConnectionInfo connectionInfo = new ConnectionInfo();
+    private String connectionLogin = "";
+    private RandomAccessFile raf;
+    private static final int lastMessagesCount = 100;
+    private File historyFile;
 
     private JTextField msgInputField;
     private JTextArea chatArea;
@@ -35,6 +37,11 @@ public class Client extends JFrame {
     private static final String ERR_SPM = "/errorSPM ";          // ошибка при отправке личного сообщения
     private static final String CLIENTS = "/clients ";           // список онлайн клиентов
     private static final String ERR_CHANGE_NICK = "/errchnick "; // ошибка при смене ника
+    private static final String NOTIFY = "/notify ";      // уведомление
+
+    private long currentMessagesCount;            // текущее количество сообщений
+    private long pointerLastMessages;             // указатель на место в файле истории,
+                                                  // откуда начинаются последние 100 сообщений
 
     public Client() {
         prepareGUI();
@@ -70,6 +77,56 @@ public class Client extends JFrame {
     }
 
     /**
+     * Создает файл истории сообщений если он не существует и загружает последние 100 сообщений
+     * Структура файла истории:
+     * Первая строка - указатель типа long на место в файле, откуда начинаются последние 100 сообщений
+     * Следующие строки - сами сообщения
+     */
+    private void createHistoryFileIfNotExist() {
+        try {
+            File historiesDir = new File("Clients Histories");
+            historiesDir.mkdir();
+            historyFile = new File(historiesDir.getPath() + "//history_" + connectionLogin + ".txt");
+            raf = new RandomAccessFile(historyFile, "rw");
+            if(historyFile.length() == 0) {
+                pointerLastMessages = 10;
+                raf.writeLong(pointerLastMessages);
+                raf.writeChar('\n');
+            } else {
+                pointerLastMessages = raf.readLong();
+                raf.seek(pointerLastMessages);
+                loadLastMessages();
+            }
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            closeConnection();
+        }
+    }
+
+    private void writeHistory(String message) {
+        try {
+            raf.writeUTF(message);
+            currentMessagesCount++;
+
+            if(currentMessagesCount > lastMessagesCount) {
+                raf.seek(pointerLastMessages);
+                raf.readUTF();
+                pointerLastMessages = raf.getFilePointer();
+                raf.seek(historyFile.length());
+            }
+        } catch (IOException e) {
+            createHistoryFileIfNotExist();
+        }
+    }
+
+    private void loadLastMessages() throws IOException {
+        while(raf.getFilePointer() != historyFile.length()) {
+            chatArea.append(raf.readUTF());
+            currentMessagesCount++;
+        }
+    }
+
+    /**
      * Цикл аутентификации
      * @throws IOException, если какие то неполадки во время чтения сообщения от сервера
      */
@@ -79,6 +136,7 @@ public class Client extends JFrame {
             if (messageFromServer.startsWith(AUTH_OK)) {
                 String[] arr = messageFromServer.split("\\s");
                 connectionInfo.setAuthorized(true);
+                createHistoryFileIfNotExist();
                 showInfoMessage("Вы вошли в чат. Ваш ник " + arr[1]);
                 setTitle(arr[1]);
                 break;
@@ -98,6 +156,7 @@ public class Client extends JFrame {
                 handleServiceMessage(messageFromServer);
                 continue;
             }
+            writeHistory(messageFromServer + "\n");
             chatArea.append(messageFromServer + "\n");
         }
     }
@@ -130,6 +189,10 @@ public class Client extends JFrame {
             showInfoMessage("Вы успешно изменили nick на " + newNick);
             setTitle(newNick);
         }
+        if(message.startsWith(NOTIFY)) {
+            String[] arr = message.split("\\s", 2);
+            chatArea.append(arr[1] + "\n");
+        }
         if(message.startsWith(ERR_CHANGE_NICK)) {
             String errMsg = message.substring(ERR_CHANGE_NICK.length());
             showErrorMessage(errMsg);
@@ -151,6 +214,10 @@ public class Client extends JFrame {
         String messageToServer = msgInputField.getText();
         if(!messageToServer.trim().isEmpty()) {
             if(connectionInfo.isConnected()) {
+                if(messageToServer.trim().startsWith("/auth")) {
+                    String[] arr = messageToServer.trim().split("\\s");
+                    connectionLogin = arr[1];
+                }
                 sendMessageToServer(messageToServer);
                 msgInputField.setText("");
                 msgInputField.grabFocus();
@@ -161,7 +228,7 @@ public class Client extends JFrame {
     }
 
     private void sendMessageToServer(String message) {
-        try{
+        try {
             dos.writeUTF(message);
             if(message.equals(END)) {
                 closeConnection();
@@ -191,6 +258,20 @@ public class Client extends JFrame {
         if(socket != null) {
             try {
                 socket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        closeHistoryReaderWriter();
+    }
+
+    private void closeHistoryReaderWriter() {
+        if(raf != null) {
+            try {
+                raf.seek(0);
+                raf.writeLong(pointerLastMessages);
+                raf.close();
+                raf = null;
             } catch (IOException e) {
                 e.printStackTrace();
             }

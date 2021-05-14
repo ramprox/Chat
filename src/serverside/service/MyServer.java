@@ -20,6 +20,7 @@ public class MyServer {
     private static final String ERR_SPM = "/errorSPM ";   // ошибка при отправке личного сообщения
     private static final String CLIENTS = "/clients ";    // список онлайн клиентов
 
+
     public AuthService getAuthService() {
         return authService;
     }
