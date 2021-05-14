@@ -6,17 +6,32 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.sql.*;
 
+/**
+ * класс Сервер
+ */
 public class MyServer {
 
     private final int PORT = 8081;
     private List<ClientHandler> clients;
     private AuthService authService;
 
+    private static final String ERR_SPM = "/errorSPM ";   // ошибка при отправке личного сообщения
+    private static final String CLIENTS = "/clients ";    // список онлайн клиентов
+
     public AuthService getAuthService() {
         return authService;
     }
 
+    /**
+     * Конструктор, запускающий сервер
+     * Последовательность запуска сервера:
+     * 1. Создание ServerSocket с портом PORT.
+     * 2. Старт сервиса аутентификации
+     * 3. Ожидание подключения от клиента
+     * 4. После подключения клиента, создается ClientHandler.
+     */
     public MyServer() {
         try (ServerSocket server = new ServerSocket(PORT)) {
             authService = new BaseAuthService();
@@ -30,10 +45,16 @@ public class MyServer {
             }
         } catch (IOException e) {
             System.out.println("Сервер грохнулся");
+        } catch(SQLException ex) {
+            for(Throwable t : ex) {
+                t.printStackTrace();
+            }
+            System.out.println("Соединение с базой данных отсутствует");
         } finally {
             if(authService != null) {
                 authService.stop();
             }
+            DBConnection.closeConnection();
         }
     }
 
@@ -44,20 +65,26 @@ public class MyServer {
     }
 
     public synchronized void sendPrivateMessage(ClientHandler sender, String nick, String message) {
-        ClientHandler client = null;
         for(ClientHandler c : clients) {
             if(c.getName().equals(nick)) {
-                client = c;
-                break;
+                c.sendMessage("[Личное сообщение от " + sender.getName() + "]: " + message);
+                sender.sendMessage("[Личное сообщение к " + nick + "]: " + message);
+                return;
             }
         }
-        if(client != null) {
-            client.sendMessage("[Личное сообщение от " + sender.getName() + "]: " + message);
-            sender.sendMessage("[Личное сообщение к " + nick + "]: " + message);
-        } else {
-            sender.sendMessage("/errorSPM Пользователя " + nick + " нет в чате");
-        }
+        sender.sendMessage(ERR_SPM + "Пользователя " + nick + " нет в чате");
     }
+
+    public synchronized void getOnlineUsersList(ClientHandler clientHandler) {
+        StringBuilder sb = new StringBuilder(CLIENTS);
+        for(ClientHandler c : clients) {
+            if(!c.equals(clientHandler)) {
+                sb.append(c.getName()).append(" ");
+            }
+        }
+        clientHandler.sendMessage(sb.toString());
+    }
+
 
     public synchronized void subscribe(ClientHandler client) {
         clients.add(client);
