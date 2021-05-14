@@ -49,6 +49,9 @@ public class Client extends JFrame {
         tryConnection();
     }
 
+    /**
+     * Попытка установить соединение
+     */
     private void tryConnection() {
         try {
             connection();
@@ -58,7 +61,6 @@ public class Client extends JFrame {
     }
 
     private void connection() throws IOException {
-        setConnected(false);
         socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
         dis = new DataInputStream(socket.getInputStream());
         dos = new DataOutputStream(socket.getOutputStream());
@@ -68,9 +70,8 @@ public class Client extends JFrame {
                 authentication();
                 readMessageFromServer();
             } catch (IOException ignored) {
-                showInfoMessage("Соединение разорвано");
+                closeConnection(true);
             } finally {
-                closeConnection();
                 setTitle("Клиент");
             }
         }).start();
@@ -231,16 +232,40 @@ public class Client extends JFrame {
         try {
             dos.writeUTF(message);
             if(message.equals(END)) {
-                closeConnection();
-                showInfoMessage("Соединение разорвано");
+                closeConnection(false);
             }
         } catch (IOException ignored) {
-            showInfoMessage("Соединение разорвано");
+            closeConnection(true);
         }
     }
 
-    private void closeConnection() {
-        setConnected(false);
+    private void closeConnection(boolean isError) {
+        if(closeConnection()) {
+            if(isError) {
+                showErrorMessage("Соединение разорвано");
+            } else {
+                showInfoMessage("Соединение разорвано");
+            }
+        }
+    }
+
+    /**
+     * Закрывает соединение
+     * @return true - если соединение не было закрыто до вызова этого метода, false - если соединение уже закрыто
+     */
+    private boolean closeConnection() {
+        if(connectionInfo.isConnected()) {
+            setConnected(false);
+            closeDataInputStream();
+            closeDataOutputStream();
+            closeSocket();
+            closeHistoryReaderWriter();
+            return true;
+        }
+        return false;
+    }
+
+    private void closeDataInputStream() {
         if(dis != null) {
             try {
                 dis.close();
@@ -248,6 +273,9 @@ public class Client extends JFrame {
                 e.printStackTrace();
             }
         }
+    }
+
+    private void closeDataOutputStream() {
         if(dos != null) {
             try {
                 dos.close();
@@ -255,6 +283,9 @@ public class Client extends JFrame {
                 e.printStackTrace();
             }
         }
+    }
+
+    private void closeSocket() {
         if(socket != null) {
             try {
                 socket.close();
@@ -262,7 +293,6 @@ public class Client extends JFrame {
                 e.printStackTrace();
             }
         }
-        closeHistoryReaderWriter();
     }
 
     private void closeHistoryReaderWriter() {

@@ -5,18 +5,21 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.*;
 
 public class ClientHandler {
     private final MyServer myServer;
     private final Socket socket;
     private final DataInputStream dis;
     private final DataOutputStream dos;
+    private volatile boolean isConnected;
 
     private String name;
 
     private static final int timeForAuthenticationInSecond = 120;
-    private static final int timeForReadMessageFromClientInSeconds = 180;
-    private volatile boolean isAuthorized = false;
+    private static final int timeForReadMessageFromClientInSeconds = 10;
     private volatile long timeLastReadedMessage;
 
     // команды от клиента
@@ -42,30 +45,104 @@ public class ClientHandler {
             this.socket = socket;
             this.dis = new DataInputStream(socket.getInputStream());
             this.dos = new DataOutputStream(socket.getOutputStream());
+            isConnected = true;
             this.name = "";
-            startAuthenticationTimer();
-            startReadMessagesFromClient();
+            ExecutorService executorService = Executors.newSingleThreadExecutor();
+            executorService.execute(clientHandlerThread());
+            executorService.shutdown();
         } catch(IOException e) {
             closeConnection();
             throw new RuntimeException("Проблемы при создании ClientHandler");
         }
     }
-    
-    private void startAuthenticationTimer() {
-        new Thread(() -> {
-                try {
-                    Thread.sleep(timeForAuthenticationInSecond * 1000);
-                    if(!isAuthorized) {
-                        closeConnection();
-                    }
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }).start();
+
+    /**
+     * Метод обработчика клиента для выполнения в отдельном потоке.
+     * Порядок выполнения метода:
+     * 1. Создается executor c 2 потоками в пуле. В одном потоке запускается таймер, в течение которого должен
+     *    авторизоваться клиент. Во втором потоке запускается цикл чтения данных авторизации от клиента.
+     *    Результатом выполнения двух потоков является значение типа boolean - клиент авторизовался или нет.
+     *    Чтобы это отследить этот результат вызывается invokeAny, т.к. какой то из потоков должен завершиться
+     *    первым. Как только один из потоков вернет значение типа Boolean (авторизовался или нет), executor
+     *    прерывает выполнение второго потока. Если клиент не авторизовался, соединение закрывается и происходит
+     *    возврат из метода.
+     * 2. Если клиент авторизовался запускается на выполнение тот же executor с двумя потоками в пуле. В одном
+     *    потоке запускается таймер на отслеживание активности от клиента, во втором потоке запускается цикл
+     *    чтения сообщений от клиента. Результат выполнения этих потоков не отслеживается, поэтому эти две
+     *    задачи запускаются на выполнение, вызывается shutdown (сообщаем, что других задач не будет) и
+     *    базовый поток завершает выполнение.
+     * @return объект, реулизующий Runnable для запуска в отдельном потоке
+     */
+    private Runnable clientHandlerThread() {
+        return () -> {
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            List<Callable<Boolean>> authTasks = new ArrayList<>();
+            authTasks.add(AuthenticationTimer());
+            authTasks.add(authentication());
+            Boolean isAuthorized = null;
+            try {
+                isAuthorized = executor.invokeAny(authTasks);
+            } catch (InterruptedException | ExecutionException ignored) {
+
+            }
+            if(isAuthorized == null || !isAuthorized) {
+                executor.shutdown();
+                closeConnection();
+                return;
+            }
+            myServer.broadcastMessage(NOTIFY + name + " вошел в чат");
+            myServer.subscribe(this);
+            long timeInMillis = timeForReadMessageFromClientInSeconds * 1000;
+            timeLastReadedMessage = System.currentTimeMillis();
+            executor.execute(readMessagesTimer(timeInMillis));
+            executor.execute(readMessagesFromClient());
+            executor.shutdown();
+        };
     }
     
-    private void startReadMessageFromClientTimer(long timeInMillis) {
-        new Thread(() -> {
+    private Callable<Boolean> AuthenticationTimer() {
+        return () -> {
+            try {
+                Thread.sleep(timeForAuthenticationInSecond * 1000);
+            } catch (InterruptedException ignored) {
+
+            }
+            return false;
+        };
+    }
+
+    private Callable<Boolean> authentication() {
+        return () -> {
+            try {
+                while (true) {
+                    String str = dis.readUTF();
+                    if (str.startsWith(AUTH)) {
+                        String[] arr = str.split("\\s");
+                        String nick = myServer
+                                .getAuthService()
+                                .getNickByLoginAndPassword(arr[1], arr[2]);
+                        if (nick != null) {
+                            if (!myServer.isNickBusy(nick)) {
+                                sendMessage(AUTH_OK + nick);
+                                name = nick;
+                                return true;
+                            } else {
+                                sendMessage("Ник занят");
+                            }
+                        } else {
+                            sendMessage("Неправильный логин или пароль");
+                        }
+                    }
+                }
+            } catch (SQLException ex) {
+                sendMessage(ERROR_DB_CONNECTION + "Соединение с базой данных отсутствует");
+            }
+            return false;
+        };
+    }
+    
+    private Runnable readMessagesTimer(long timeInMillis) {
+        return () -> {
             try {
                 while(true) {
                     Thread.sleep(1);
@@ -74,69 +151,29 @@ public class ClientHandler {
                         break;
                     }
                 }
-            } catch (InterruptedException e) {
-                e.printStackTrace();
+            } catch (InterruptedException ignored) {
+
             }
-        }).start();
+        };
     }
 
-    private void startReadMessagesFromClient() {
-        new Thread(() -> {
+    private Runnable readMessagesFromClient() {
+        return () -> {
             try {
-                authentication();
-                readMessage();
+                readMessages();
             } catch (IOException ignored) {
 
             } finally {
                 closeConnection();
             }
-        }).start();
-    }
-
-    /**
-     * Цикл аутентификации
-     * @throws IOException, если какие то неполадки во время чтения сообщения от клиента
-     * @throws SQLException, если какие то неполадки по время обращения к базе данных
-     */
-    public void authentication() throws IOException {
-        try {
-            while (true) {
-                String str = dis.readUTF();
-                if (str.startsWith(AUTH)) {
-                    String[] arr = str.split("\\s");
-                    String nick = myServer
-                            .getAuthService()
-                            .getNickByLoginAndPassword(arr[1], arr[2]);
-                    if (nick != null) {
-                        if (!myServer.isNickBusy(nick)) {
-                            isAuthorized = true;
-                            sendMessage(AUTH_OK + nick);
-                            name = nick;
-                            myServer.broadcastMessage(NOTIFY + name + " вошел в чат");
-                            myServer.subscribe(this);
-                            return;
-                        } else {
-                            sendMessage("Ник занят");
-                        }
-                    } else {
-                        sendMessage("Неправильный логин или пароль");
-                    }
-                }
-            }
-        } catch (SQLException ex) {
-            sendMessage(ERROR_DB_CONNECTION + "Соединение с базой данных отсутствует");
-            closeConnection();
-        }
+        };
     }
 
     /**
      * Цикл чтения сообщений от клиента после успешной аутентификации
      * @throws IOException, если какие то неполадки во время чтения сообщения от клиента
      */
-    public void readMessage() throws IOException {
-        long timeInMillis = timeForReadMessageFromClientInSeconds * 1000;
-        timeLastReadedMessage = System.currentTimeMillis();
-        startReadMessageFromClientTimer(timeInMillis);
+    public void readMessages() throws IOException {
         while(true) {
             String messageFromClient = dis.readUTF();
             timeLastReadedMessage = System.currentTimeMillis();
@@ -212,22 +249,25 @@ public class ClientHandler {
     }
 
     private void closeConnection() {
-        myServer.unsubscribe(this);
-        myServer.broadcastMessage(NOTIFY + name + " покинул чат");
-        try {
-            dis.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        try {
-            dos.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        try {
-            socket.close();
-        } catch (IOException e) {
-            e.printStackTrace();
+        if(isConnected) {
+            isConnected = false;
+            myServer.unsubscribe(this);
+            myServer.broadcastMessage(NOTIFY + name + " покинул чат");
+            try {
+                dis.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            try {
+                dos.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            try {
+                socket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 
